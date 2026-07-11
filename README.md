@@ -35,13 +35,28 @@ Keep **POS mode** selected for kit checkout with your Render PayPal integration.
 
 ---
 
+## NFC troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| Nothing happens on write | Turn **NFC ON** in phone Settings |
+| Write fails | Use blank **NTAG213/215** stickers; hold still on the **back** of the phone 2s |
+| Tag locked | Some cheap tags are read-only after first write — use a new sticker |
+| iPhone customer | **Works** if tag has **HTTPS URL** (system opens Safari). Web NFC scan in Chrome on iPhone does **not** work |
+| Web POS “Scan NFC” fails | Expected on iPhone/desktop. Use **pre-written URL tags** instead |
+| Wrong product opens | Re-write tag with correct product selected |
+
+**Reader Mode** is used (not old foreground dispatch) — more reliable on modern Android.
+
+---
+
 ## How staff use it
 
 ### A. Program tags (once)
 
 1. Select product e.g. **Family Kit**
 2. Tap **Write this link to NFC tag**
-3. Hold blank NFC sticker to phone  
+3. Hold blank NFC sticker flat on the **back** of the phone until “TAG WRITTEN”
 4. Tag now opens:  
    `https://leaflock-paypal-pos.onrender.com/?product=family`
 

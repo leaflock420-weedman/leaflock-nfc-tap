@@ -1,6 +1,5 @@
 package com.leaflock.nfctap
 
-import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
 import android.nfc.NdefMessage
@@ -9,30 +8,26 @@ import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.nfc.tech.Ndef
 import android.nfc.tech.NdefFormatable
-import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.leaflock.nfctap.databinding.ActivityMainBinding
-import java.nio.charset.Charset
 
 /**
- * LeafLock staff NFC helper:
- * - Build POS links for fixed kits or custom AUD amounts
- * - Write links onto NFC tags
- * - Read tags and open the POS / URL
- * - Optional PayPal.me fallback
- *
- * No root. No LSPosed/SandHook.
+ * LeafLock staff NFC helper — Reader Mode (reliable write/read).
+ * Tags store full HTTPS POS links so customer phones open Chrome without any app.
  */
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
 
     private lateinit var binding: ActivityMainBinding
     private var nfcAdapter: NfcAdapter? = null
-    private var listening = false
     private var writeMode = false
+    private var listenMode = false
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,12 +35,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         nfcAdapter = NfcAdapter.getDefaultAdapter(this)
-        if (nfcAdapter == null) {
-            toast("This phone has no NFC")
-            binding.statusText.text = "NFC not supported on this device"
-        } else if (nfcAdapter?.isEnabled == false) {
-            binding.statusText.text = "Turn NFC on in system settings"
-        }
+        updateNfcStatusBanner()
 
         val adapter = ArrayAdapter(
             this,
@@ -77,38 +67,129 @@ class MainActivity : AppCompatActivity() {
 
         binding.modeGroup.setOnCheckedChangeListener { _, _ -> refreshPreview() }
         binding.amountInput.setOnFocusChangeListener { _, _ -> refreshPreview() }
+        binding.amountInput.addTextChangedListener(SimpleTextWatcher { refreshPreview() })
 
         binding.openLinkButton.setOnClickListener {
             val url = buildPaymentUrl() ?: return@setOnClickListener
             openUrl(url)
-            binding.statusText.text = "Opened payment link"
+            setStatus("Opened:\n$url")
         }
 
         binding.writeTagButton.setOnClickListener {
             val url = buildPaymentUrl() ?: return@setOnClickListener
+            if (nfcAdapter == null) {
+                toast("This phone has no NFC")
+                return@setOnClickListener
+            }
+            if (nfcAdapter?.isEnabled != true) {
+                toast("Turn ON NFC in phone Settings first")
+                setStatus("NFC is OFF — enable it in Settings → Connected devices → NFC")
+                return@setOnClickListener
+            }
             writeMode = true
-            listening = true
-            enableForeground()
-            binding.statusText.text = "WRITE MODE — hold tag to phone now\n$url"
-            toast("Hold blank/writable NFC tag to the back of the phone")
+            listenMode = false
+            enableReaderMode()
+            setStatus(
+                "✍️ WRITE MODE\n\n" +
+                    "Hold the NFC tag flat against the back of the phone (near the camera / centre).\n\n" +
+                    "Link:\n$url"
+            )
+            toast("Hold tag to phone now")
+            binding.listenButton.text = "Start NFC listen (read tags)"
         }
 
         binding.listenButton.setOnClickListener {
+            if (nfcAdapter == null) {
+                toast("This phone has no NFC")
+                return@setOnClickListener
+            }
+            if (nfcAdapter?.isEnabled != true) {
+                toast("Turn ON NFC in phone Settings first")
+                return@setOnClickListener
+            }
             writeMode = false
-            listening = !listening
-            if (listening) {
-                enableForeground()
+            listenMode = !listenMode
+            if (listenMode) {
+                enableReaderMode()
                 binding.listenButton.text = "Stop NFC listen"
-                binding.statusText.text = "Listening — tap a tag to open its link"
+                setStatus("👂 LISTENING\n\nTap a programmed NFC tag to open its payment link.")
             } else {
-                disableForeground()
+                disableReaderMode()
                 binding.listenButton.text = "Start NFC listen (read tags)"
-                binding.statusText.text = "Stopped"
+                setStatus("Stopped listening")
             }
         }
 
         refreshPreview()
-        handleIntent(intent)
+        // Cold start from tag tap while app closed
+        handleLaunchIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleLaunchIntent(intent)
+    }
+
+    /** ReaderCallback — most reliable path on modern Android */
+    override fun onTagDiscovered(tag: Tag) {
+        mainHandler.post {
+            try {
+                if (writeMode) {
+                    val url = buildPaymentUrl()
+                    if (url == null) {
+                        setStatus("Write cancelled — pick product / amount first")
+                        writeMode = false
+                        return@post
+                    }
+                    val result = writeUrlToTag(tag, url)
+                    writeMode = false
+                    if (!listenMode) disableReaderMode()
+                    if (result == null) {
+                        setStatus("✅ TAG WRITTEN\n\n$url\n\nTest: tap tag with another phone — POS should open.")
+                        toast("Tag written OK")
+                    } else {
+                        setStatus("❌ WRITE FAILED\n\n$result\n\nTips:\n• Use blank NTAG213/215 stickers\n• Hold still 2 seconds\n• Tag may be locked")
+                        toast("Write failed")
+                    }
+                    return@post
+                }
+
+                if (listenMode) {
+                    val url = readUrlFromTag(tag)
+                    if (url != null) {
+                        setStatus("Tag read — opening\n$url")
+                        openUrl(url)
+                    } else {
+                        val code = readTextCodeFromTag(tag)
+                        if (code != null) {
+                            val base = getString(R.string.pos_base_url).trimEnd('/')
+                            val built = "$base/?product=${code.trim()}"
+                            setStatus("Product code on tag: $code\nOpening $built")
+                            openUrl(built)
+                        } else {
+                            setStatus("Tag has no URL/text. Program it with Write first.")
+                            toast("Empty / unknown tag")
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                setStatus("NFC error: ${e.message}")
+                toast("NFC error: ${e.message}")
+            }
+        }
+    }
+
+    private fun handleLaunchIntent(intent: Intent?) {
+        if (intent == null) return
+        // If system delivered a tag URI to us via NDEF_DISCOVERED, open it
+        if (intent.action == NfcAdapter.ACTION_NDEF_DISCOVERED) {
+            val data = intent.dataString
+            if (!data.isNullOrBlank()) {
+                setStatus("Opened from tag:\n$data")
+                openUrl(data)
+            }
+        }
     }
 
     private fun selectedProduct(): PosProduct =
@@ -121,8 +202,8 @@ class MainActivity : AppCompatActivity() {
 
         if (binding.modePayPalMe.isChecked) {
             val user = getString(R.string.paypal_me_user).trim()
-            if (user.isEmpty() || user == "YOUR_PAYPAL_ME_USERNAME") {
-                toast("Set paypal_me_user in strings.xml first")
+            if (user.isEmpty() || user.equals("YOUR_PAYPAL_ME_USERNAME", true)) {
+                toast("PayPal.me username not set")
                 return null
             }
             val amount = amountRaw.ifEmpty {
@@ -132,12 +213,14 @@ class MainActivity : AppCompatActivity() {
                 toast("Enter an amount for PayPal.me")
                 return null
             }
-            return "https://paypal.me/$user/$amount"
+            // Normalize amount for paypal.me (no trailing junk)
+            val normalized = amount.toDoubleOrNull()?.let { "%.2f".format(it) } ?: amount
+            return "https://paypal.me/$user/$normalized"
         }
 
-        // POS mode (recommended)
+        // POS mode
         return when {
-            product.code == "custom" || amountRaw.isNotEmpty() && product.code == "custom" -> {
+            product.code == "custom" -> {
                 val amount = amountRaw.toDoubleOrNull()
                 if (amount == null || amount <= 0) {
                     toast("Enter a valid custom amount")
@@ -158,84 +241,104 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshPreview() {
-        binding.linkPreview.text = buildPaymentUrl() ?: "Select product / amount"
+        // Don't toast from preview
+        try {
+            val base = getString(R.string.pos_base_url).trimEnd('/')
+            val product = selectedProduct()
+            val amountRaw = binding.amountInput.text?.toString()?.trim().orEmpty()
+            val preview = if (binding.modePayPalMe.isChecked) {
+                val user = getString(R.string.paypal_me_user)
+                val amount = amountRaw.ifEmpty { product.priceAud?.let { "%.2f".format(it) } ?: "?" }
+                "https://paypal.me/$user/$amount"
+            } else if (product.code == "custom") {
+                val amount = amountRaw.toDoubleOrNull()
+                if (amount != null && amount > 0) "$base/?amount=${"%.2f".format(amount)}"
+                else "$base/?amount=?"
+            } else {
+                "$base/?product=${product.code}"
+            }
+            binding.linkPreview.text = preview
+        } catch (_: Exception) {
+            binding.linkPreview.text = "…"
+        }
     }
 
     private fun openUrl(url: String) {
-        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-    }
-
-    private fun enableForeground() {
-        val adapter = nfcAdapter ?: return
-        val intent = Intent(this, javaClass).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        } else {
-            PendingIntent.FLAG_UPDATE_CURRENT
-        }
-        val pi = PendingIntent.getActivity(this, 0, intent, flags)
-        adapter.enableForegroundDispatch(this, pi, null, null)
-    }
-
-    private fun disableForeground() {
         try {
-            nfcAdapter?.disableForegroundDispatch(this)
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (e: Exception) {
+            toast("No browser: ${e.message}")
+        }
+    }
+
+    private fun enableReaderMode() {
+        val adapter = nfcAdapter ?: return
+        if (!adapter.isEnabled) {
+            toast("Turn NFC ON in Settings")
+            return
+        }
+        // Reader mode is far more reliable than foreground dispatch for write/read
+        val flags = NfcAdapter.FLAG_READER_NFC_A or
+            NfcAdapter.FLAG_READER_NFC_B or
+            NfcAdapter.FLAG_READER_NFC_F or
+            NfcAdapter.FLAG_READER_NFC_V or
+            NfcAdapter.FLAG_READER_NFC_BARCODE
+        try {
+            adapter.enableReaderMode(this, this, flags, null)
+        } catch (e: Exception) {
+            toast("Could not start NFC: ${e.message}")
+            setStatus("NFC start failed: ${e.message}")
+        }
+    }
+
+    private fun disableReaderMode() {
+        try {
+            nfcAdapter?.disableReaderMode(this)
         } catch (_: Exception) {
         }
     }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        handleIntent(intent)
-    }
+    private fun writeUrlToTag(tag: Tag, url: String): String? {
+        return try {
+            val uriRecord = NdefRecord.createUri(url)
+            // Also store product code as text for Web NFC / simple readers
+            val product = selectedProduct()
+            val textRecord = NdefRecord.createTextRecord("en", product.code)
+            val message = NdefMessage(arrayOf(uriRecord, textRecord))
+            val bytes = message.toByteArray()
 
-    private fun handleIntent(intent: Intent?) {
-        if (intent == null) return
-        val action = intent.action ?: return
-        if (action != NfcAdapter.ACTION_NDEF_DISCOVERED &&
-            action != NfcAdapter.ACTION_TAG_DISCOVERED &&
-            action != NfcAdapter.ACTION_TECH_DISCOVERED
-        ) return
-
-        val tag: Tag? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            intent.getParcelableExtra(NfcAdapter.EXTRA_TAG, Tag::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            intent.getParcelableExtra(NfcAdapter.EXTRA_TAG)
-        }
-
-        if (tag == null) return
-
-        if (writeMode) {
-            val url = buildPaymentUrl() ?: return
-            val ok = writeUrlToTag(tag, url)
-            writeMode = false
-            if (!listening) disableForeground()
-            if (ok) {
-                binding.statusText.text = "Tag written ✓\n$url"
-                toast("NFC tag written")
+            val ndef = Ndef.get(tag)
+            if (ndef != null) {
+                ndef.connect()
+                try {
+                    if (!ndef.isWritable) return "Tag is locked (not writable)"
+                    if (ndef.maxSize < bytes.size) {
+                        return "Tag too small (${ndef.maxSize} bytes, need ${bytes.size})"
+                    }
+                    ndef.writeNdefMessage(message)
+                } finally {
+                    try {
+                        ndef.close()
+                    } catch (_: Exception) {
+                    }
+                }
+                null
             } else {
-                binding.statusText.text = "Write failed — tag locked or not writable?"
-                toast("Could not write tag")
+                val formatable = NdefFormatable.get(tag)
+                    ?: return "Tag type not supported (need NTAG213/215/216)"
+                formatable.connect()
+                try {
+                    formatable.format(message)
+                } finally {
+                    try {
+                        formatable.close()
+                    } catch (_: Exception) {
+                    }
+                }
+                null
             }
-            return
-        }
-
-        // Read mode
-        val url = readUrlFromTag(tag)
-        if (url != null) {
-            binding.statusText.text = "Tag read — opening\n$url"
-            openUrl(url)
-        } else {
-            // Fallback: open currently selected POS product
-            val fallback = buildPaymentUrl()
-            if (fallback != null) {
-                binding.statusText.text = "No URL on tag — opening selected product"
-                openUrl(fallback)
-            } else {
-                toast("No URL on tag")
-            }
+        } catch (e: Exception) {
+            e.message ?: "Unknown write error"
         }
     }
 
@@ -243,44 +346,81 @@ class MainActivity : AppCompatActivity() {
         return try {
             val ndef = Ndef.get(tag) ?: return null
             ndef.connect()
-            val msg = ndef.ndefMessage ?: ndef.cachedNdefMessage
-            ndef.close()
-            if (msg == null) return null
+            val msg = try {
+                ndef.ndefMessage ?: ndef.cachedNdefMessage
+            } finally {
+                try {
+                    ndef.close()
+                } catch (_: Exception) {
+                }
+            } ?: return null
+
             for (record in msg.records) {
-                when (record.tnf) {
-                    NdefRecord.TNF_WELL_KNOWN -> {
-                        if (record.type.contentEquals(NdefRecord.RTD_URI)) {
-                            return parseUriRecord(record.payload)
-                        }
-                        if (record.type.contentEquals(NdefRecord.RTD_TEXT)) {
-                            val text = parseTextRecord(record.payload)
-                            if (text.startsWith("http")) return text
-                            // product code on tag e.g. "family"
-                            val base = getString(R.string.pos_base_url).trimEnd('/')
-                            return "$base/?product=${text.trim()}"
-                        }
-                    }
-                    NdefRecord.TNF_ABSOLUTE_URI -> {
-                        return String(record.payload, Charset.forName("UTF-8"))
-                    }
+                if (record.tnf == NdefRecord.TNF_WELL_KNOWN &&
+                    record.type.contentEquals(NdefRecord.RTD_URI)
+                ) {
+                    // createUri payload uses URI identifier code
+                    return parseUriPayload(record.payload)
+                }
+                if (record.tnf == NdefRecord.TNF_ABSOLUTE_URI) {
+                    return String(record.payload, Charsets.UTF_8)
+                }
+            }
+            // Fallback: any text that looks like URL
+            for (record in msg.records) {
+                if (record.tnf == NdefRecord.TNF_WELL_KNOWN &&
+                    record.type.contentEquals(NdefRecord.RTD_TEXT)
+                ) {
+                    val text = parseTextPayload(record.payload)
+                    if (text.startsWith("http://") || text.startsWith("https://")) return text
                 }
             }
             null
-        } catch (e: Exception) {
-            toast("Read error: ${e.message}")
+        } catch (_: Exception) {
             null
         }
     }
 
-    private fun parseTextRecord(payload: ByteArray): String {
-        if (payload.isEmpty()) return ""
-        val langLen = payload[0].toInt() and 0x3F
-        return String(payload, 1 + langLen, payload.size - 1 - langLen, Charsets.UTF_8)
+    private fun readTextCodeFromTag(tag: Tag): String? {
+        return try {
+            val ndef = Ndef.get(tag) ?: return null
+            ndef.connect()
+            val msg = try {
+                ndef.ndefMessage ?: ndef.cachedNdefMessage
+            } finally {
+                try {
+                    ndef.close()
+                } catch (_: Exception) {
+                }
+            } ?: return null
+            for (record in msg.records) {
+                if (record.tnf == NdefRecord.TNF_WELL_KNOWN &&
+                    record.type.contentEquals(NdefRecord.RTD_TEXT)
+                ) {
+                    val text = parseTextPayload(record.payload).trim()
+                    if (text.isNotEmpty() && !text.startsWith("http")) return text
+                }
+            }
+            null
+        } catch (_: Exception) {
+            null
+        }
     }
 
-    private fun parseUriRecord(payload: ByteArray): String {
+    private fun parseTextPayload(payload: ByteArray): String {
         if (payload.isEmpty()) return ""
-        val prefixCode = payload[0].toInt() and 0xFF
+        val status = payload[0].toInt()
+        val langLen = status and 0x3F
+        val isUtf16 = (status and 0x80) != 0
+        val charset = if (isUtf16) Charsets.UTF_16 else Charsets.UTF_8
+        val start = 1 + langLen
+        if (start >= payload.size) return ""
+        return String(payload, start, payload.size - start, charset)
+    }
+
+    private fun parseUriPayload(payload: ByteArray): String {
+        if (payload.isEmpty()) return ""
+        val code = payload[0].toInt() and 0xFF
         val prefixes = arrayOf(
             "", "http://www.", "https://www.", "http://", "https://",
             "tel:", "mailto:", "ftp://anonymous:anonymous@", "ftp://ftp.",
@@ -290,54 +430,44 @@ class MainActivity : AppCompatActivity() {
             "irdaobex://", "file://", "urn:epc:id:", "urn:epc:tag:", "urn:epc:pat:",
             "urn:epc:raw:", "urn:epc:", "urn:nfc:"
         )
-        val prefix = if (prefixCode < prefixes.size) prefixes[prefixCode] else ""
-        val rest = String(payload, 1, payload.size - 1, Charsets.UTF_8)
-        return prefix + rest
+        val prefix = if (code < prefixes.size) prefixes[code] else ""
+        return prefix + String(payload, 1, payload.size - 1, Charsets.UTF_8)
     }
 
-    private fun writeUrlToTag(tag: Tag, url: String): Boolean {
-        return try {
-            val record = NdefRecord.createUri(url)
-            val message = NdefMessage(arrayOf(record))
-            val ndef = Ndef.get(tag)
-            if (ndef != null) {
-                ndef.connect()
-                if (!ndef.isWritable) {
-                    ndef.close()
-                    return false
-                }
-                if (ndef.maxSize < message.toByteArray().size) {
-                    ndef.close()
-                    return false
-                }
-                ndef.writeNdefMessage(message)
-                ndef.close()
-                true
-            } else {
-                val format = NdefFormatable.get(tag) ?: return false
-                format.connect()
-                format.format(message)
-                format.close()
-                true
-            }
-        } catch (e: Exception) {
-            toast("Write error: ${e.message}")
-            false
+    private fun updateNfcStatusBanner() {
+        val adapter = nfcAdapter
+        when {
+            adapter == null -> setStatus("This phone has no NFC hardware.")
+            !adapter.isEnabled -> setStatus("NFC is OFF.\nSettings → Connected devices → Connection preferences → NFC → ON")
+            else -> setStatus("NFC ready.\n1) Pick product\n2) Write tag\n3) Customer taps with their phone → POS opens")
         }
+    }
+
+    private fun setStatus(msg: String) {
+        binding.statusText.text = msg
+    }
+
+    private fun toast(msg: String) {
+        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
     }
 
     override fun onResume() {
         super.onResume()
-        if (listening || writeMode) enableForeground()
+        updateNfcStatusBanner()
+        if (writeMode || listenMode) enableReaderMode()
         refreshPreview()
     }
 
     override fun onPause() {
         super.onPause()
-        disableForeground()
+        // Keep reader mode only while activity visible
+        disableReaderMode()
     }
+}
 
-    private fun toast(msg: String) {
-        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-    }
+/** Tiny TextWatcher without boilerplate */
+private class SimpleTextWatcher(val onChange: () -> Unit) : android.text.TextWatcher {
+    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+    override fun afterTextChanged(s: android.text.Editable?) = onChange()
 }
