@@ -6,6 +6,7 @@ import android.nfc.NdefMessage
 import android.nfc.NdefRecord
 import android.nfc.NfcAdapter
 import android.nfc.Tag
+import android.nfc.tech.IsoDep
 import android.nfc.tech.Ndef
 import android.nfc.tech.NdefFormatable
 import android.os.Bundle
@@ -18,8 +19,15 @@ import androidx.appcompat.app.AppCompatActivity
 import com.leaflock.nfctap.databinding.ActivityMainBinding
 
 /**
- * LeafLock staff NFC helper — Reader Mode (reliable write/read).
- * Tags store full HTTPS POS links so customer phones open Chrome without any app.
+ * LeafLock staff NFC helper.
+ *
+ * IMPORTANT:
+ * - Debit/credit contactless cards are NOT readable product tags.
+ *   They use EMV (IsoDep). You cannot pull PayPal money from a card this way.
+ * - Program blank NTAG stickers with POS/PayPal.me URLs for product taps.
+ * - Optional "any tap" mode: any NFC field (including a card) only *triggers*
+ *   opening your PayPal.me / POS link for the amount you typed — it does not
+ *   charge the card.
  */
 class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
 
@@ -68,6 +76,18 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         binding.modeGroup.setOnCheckedChangeListener { _, _ -> refreshPreview() }
         binding.amountInput.setOnFocusChangeListener { _, _ -> refreshPreview() }
         binding.amountInput.addTextChangedListener(SimpleTextWatcher { refreshPreview() })
+        binding.anyTapSwitch.setOnCheckedChangeListener { _, checked ->
+            if (checked) {
+                setStatus(
+                    "ANY TAP mode ON\n\n" +
+                        "When you tap a debit card or blank tag, the app will open your payment link " +
+                        "for the amount/product selected.\n\n" +
+                        "This does NOT charge the debit card. It only opens PayPal/POS on your phone."
+                )
+            } else {
+                updateNfcStatusBanner()
+            }
+        }
 
         binding.openLinkButton.setOnClickListener {
             val url = buildPaymentUrl() ?: return@setOnClickListener
@@ -77,42 +97,34 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
 
         binding.writeTagButton.setOnClickListener {
             val url = buildPaymentUrl() ?: return@setOnClickListener
-            if (nfcAdapter == null) {
-                toast("This phone has no NFC")
-                return@setOnClickListener
-            }
-            if (nfcAdapter?.isEnabled != true) {
-                toast("Turn ON NFC in phone Settings first")
-                setStatus("NFC is OFF — enable it in Settings → Connected devices → NFC")
-                return@setOnClickListener
-            }
+            if (!ensureNfcOn()) return@setOnClickListener
             writeMode = true
             listenMode = false
             enableReaderMode()
             setStatus(
-                "✍️ WRITE MODE\n\n" +
-                    "Hold the NFC tag flat against the back of the phone (near the camera / centre).\n\n" +
-                    "Link:\n$url"
+                "✍️ WRITE MODE — use a blank NTAG sticker (NOT a debit card)\n\n" +
+                    "Hold sticker on the back of the phone.\n\n$url"
             )
-            toast("Hold tag to phone now")
+            toast("Use a blank NFC sticker — not a bank card")
             binding.listenButton.text = "Start NFC listen (read tags)"
         }
 
         binding.listenButton.setOnClickListener {
-            if (nfcAdapter == null) {
-                toast("This phone has no NFC")
-                return@setOnClickListener
-            }
-            if (nfcAdapter?.isEnabled != true) {
-                toast("Turn ON NFC in phone Settings first")
-                return@setOnClickListener
-            }
+            if (!ensureNfcOn()) return@setOnClickListener
             writeMode = false
             listenMode = !listenMode
             if (listenMode) {
                 enableReaderMode()
                 binding.listenButton.text = "Stop NFC listen"
-                setStatus("👂 LISTENING\n\nTap a programmed NFC tag to open its payment link.")
+                setStatus(
+                    "👂 LISTENING\n\n" +
+                        "• Programmed sticker → opens its URL\n" +
+                        "• Debit/credit card → cannot be “read” as a product tag\n" +
+                        (if (binding.anyTapSwitch.isChecked)
+                            "• ANY TAP is ON → card/tag will open your payment link"
+                        else
+                            "• Turn on “Any NFC tap opens payment link” below if you want card-as-button")
+                )
             } else {
                 disableReaderMode()
                 binding.listenButton.text = "Start NFC listen (read tags)"
@@ -121,7 +133,6 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         }
 
         refreshPreview()
-        // Cold start from tag tap while app closed
         handleLaunchIntent(intent)
     }
 
@@ -131,46 +142,105 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         handleLaunchIntent(intent)
     }
 
-    /** ReaderCallback — most reliable path on modern Android */
     override fun onTagDiscovered(tag: Tag) {
         mainHandler.post {
             try {
+                val techs = tag.techList.joinToString()
+                val looksLikeBankCard =
+                    techs.contains("IsoDep", ignoreCase = true) &&
+                        Ndef.get(tag) == null &&
+                        NdefFormatable.get(tag) == null
+
                 if (writeMode) {
+                    if (looksLikeBankCard) {
+                        writeMode = false
+                        if (!listenMode) disableReaderMode()
+                        setStatus(
+                            "❌ That is a debit/credit card\n\n" +
+                                "Bank cards cannot be programmed as product tags.\n\n" +
+                                "Buy blank NTAG213 NFC stickers and write those instead."
+                        )
+                        toast("Cannot write a bank card")
+                        return@post
+                    }
                     val url = buildPaymentUrl()
                     if (url == null) {
                         setStatus("Write cancelled — pick product / amount first")
                         writeMode = false
                         return@post
                     }
-                    val result = writeUrlToTag(tag, url)
+                    val err = writeUrlToTag(tag, url)
                     writeMode = false
                     if (!listenMode) disableReaderMode()
-                    if (result == null) {
-                        setStatus("✅ TAG WRITTEN\n\n$url\n\nTest: tap tag with another phone — POS should open.")
+                    if (err == null) {
+                        setStatus("✅ TAG WRITTEN\n\n$url\n\nCustomer taps sticker with their phone → payment page opens.")
                         toast("Tag written OK")
                     } else {
-                        setStatus("❌ WRITE FAILED\n\n$result\n\nTips:\n• Use blank NTAG213/215 stickers\n• Hold still 2 seconds\n• Tag may be locked")
+                        setStatus("❌ WRITE FAILED\n\n$err")
                         toast("Write failed")
                     }
                     return@post
                 }
 
                 if (listenMode) {
+                    // 1) Prefer real NDEF product / URL tags
                     val url = readUrlFromTag(tag)
                     if (url != null) {
                         setStatus("Tag read — opening\n$url")
                         openUrl(url)
-                    } else {
-                        val code = readTextCodeFromTag(tag)
-                        if (code != null) {
-                            val base = getString(R.string.pos_base_url).trimEnd('/')
-                            val built = "$base/?product=${code.trim()}"
-                            setStatus("Product code on tag: $code\nOpening $built")
-                            openUrl(built)
+                        return@post
+                    }
+                    val code = readTextCodeFromTag(tag)
+                    if (code != null) {
+                        val base = getString(R.string.pos_base_url).trimEnd('/')
+                        val built = "$base/?product=${code.trim()}"
+                        setStatus("Product code on tag: $code\nOpening $built")
+                        openUrl(built)
+                        return@post
+                    }
+
+                    // 2) Bank card or empty tag
+                    if (looksLikeBankCard) {
+                        if (binding.anyTapSwitch.isChecked) {
+                            val payUrl = buildPaymentUrl()
+                            if (payUrl != null) {
+                                setStatus(
+                                    "Bank card detected (not readable as data).\n" +
+                                        "ANY TAP → opening your payment link:\n$payUrl\n\n" +
+                                        "Note: the card was NOT charged by NFC. Customer still pays in PayPal/POS."
+                                )
+                                openUrl(payUrl)
+                            } else {
+                                setStatus("Bank card tapped — enter amount / product first for ANY TAP mode")
+                            }
                         } else {
-                            setStatus("Tag has no URL/text. Program it with Write first.")
-                            toast("Empty / unknown tag")
+                            setStatus(
+                                "❌ Debit/credit card — cannot read product data\n\n" +
+                                    "Contactless cards are locked payment chips (EMV).\n\n" +
+                                    "What works:\n" +
+                                    "1) Blank NFC stickers with your POS link written on them\n" +
+                                    "2) Or turn ON “Any NFC tap opens payment link” so a card only acts as a button to open PayPal.me / POS (still not a card charge)"
+                            )
+                            toast("Bank card is not a product tag")
                         }
+                        return@post
+                    }
+
+                    // Empty / unknown non-card tag
+                    if (binding.anyTapSwitch.isChecked) {
+                        val payUrl = buildPaymentUrl()
+                        if (payUrl != null) {
+                            setStatus("Empty tag — ANY TAP opening:\n$payUrl")
+                            openUrl(payUrl)
+                        } else {
+                            setStatus("Empty tag — pick product or amount first")
+                        }
+                    } else {
+                        setStatus(
+                            "No URL/text on this tag.\n" +
+                                "Use Write to program an NTAG sticker, or enable ANY TAP."
+                        )
+                        toast("Empty / unknown tag")
                     }
                 }
             } catch (e: Exception) {
@@ -182,7 +252,6 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
 
     private fun handleLaunchIntent(intent: Intent?) {
         if (intent == null) return
-        // If system delivered a tag URI to us via NDEF_DISCOVERED, open it
         if (intent.action == NfcAdapter.ACTION_NDEF_DISCOVERED) {
             val data = intent.dataString
             if (!data.isNullOrBlank()) {
@@ -213,12 +282,10 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                 toast("Enter an amount for PayPal.me")
                 return null
             }
-            // Normalize amount for paypal.me (no trailing junk)
             val normalized = amount.toDoubleOrNull()?.let { "%.2f".format(it) } ?: amount
             return "https://paypal.me/$user/$normalized"
         }
 
-        // POS mode
         return when {
             product.code == "custom" -> {
                 val amount = amountRaw.toDoubleOrNull()
@@ -241,14 +308,15 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     }
 
     private fun refreshPreview() {
-        // Don't toast from preview
         try {
             val base = getString(R.string.pos_base_url).trimEnd('/')
             val product = selectedProduct()
             val amountRaw = binding.amountInput.text?.toString()?.trim().orEmpty()
             val preview = if (binding.modePayPalMe.isChecked) {
                 val user = getString(R.string.paypal_me_user)
-                val amount = amountRaw.ifEmpty { product.priceAud?.let { "%.2f".format(it) } ?: "?" }
+                val amount = amountRaw.ifEmpty {
+                    product.priceAud?.let { "%.2f".format(it) } ?: "?"
+                }
                 "https://paypal.me/$user/$amount"
             } else if (product.code == "custom") {
                 val amount = amountRaw.toDoubleOrNull()
@@ -271,13 +339,27 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         }
     }
 
+    private fun ensureNfcOn(): Boolean {
+        val adapter = nfcAdapter
+        if (adapter == null) {
+            toast("This phone has no NFC")
+            setStatus("No NFC hardware on this phone")
+            return false
+        }
+        if (!adapter.isEnabled) {
+            toast("Turn ON NFC in Settings")
+            setStatus("NFC is OFF — Settings → Connected devices → NFC → ON")
+            return false
+        }
+        return true
+    }
+
     private fun enableReaderMode() {
         val adapter = nfcAdapter ?: return
         if (!adapter.isEnabled) {
             toast("Turn NFC ON in Settings")
             return
         }
-        // Reader mode is far more reliable than foreground dispatch for write/read
         val flags = NfcAdapter.FLAG_READER_NFC_A or
             NfcAdapter.FLAG_READER_NFC_B or
             NfcAdapter.FLAG_READER_NFC_F or
@@ -299,9 +381,12 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     }
 
     private fun writeUrlToTag(tag: Tag, url: String): String? {
+        // Refuse bank cards early
+        if (IsoDep.get(tag) != null && Ndef.get(tag) == null && NdefFormatable.get(tag) == null) {
+            return "This is a bank card, not a programmable sticker"
+        }
         return try {
             val uriRecord = NdefRecord.createUri(url)
-            // Also store product code as text for Web NFC / simple readers
             val product = selectedProduct()
             val textRecord = NdefRecord.createTextRecord("en", product.code)
             val message = NdefMessage(arrayOf(uriRecord, textRecord))
@@ -325,7 +410,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                 null
             } else {
                 val formatable = NdefFormatable.get(tag)
-                    ?: return "Tag type not supported (need NTAG213/215/216)"
+                    ?: return "Not a programmable NTAG sticker (got: ${tag.techList.joinToString()})"
                 formatable.connect()
                 try {
                     formatable.format(message)
@@ -359,14 +444,12 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                 if (record.tnf == NdefRecord.TNF_WELL_KNOWN &&
                     record.type.contentEquals(NdefRecord.RTD_URI)
                 ) {
-                    // createUri payload uses URI identifier code
                     return parseUriPayload(record.payload)
                 }
                 if (record.tnf == NdefRecord.TNF_ABSOLUTE_URI) {
                     return String(record.payload, Charsets.UTF_8)
                 }
             }
-            // Fallback: any text that looks like URL
             for (record in msg.records) {
                 if (record.tnf == NdefRecord.TNF_WELL_KNOWN &&
                     record.type.contentEquals(NdefRecord.RTD_TEXT)
@@ -438,8 +521,13 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         val adapter = nfcAdapter
         when {
             adapter == null -> setStatus("This phone has no NFC hardware.")
-            !adapter.isEnabled -> setStatus("NFC is OFF.\nSettings → Connected devices → Connection preferences → NFC → ON")
-            else -> setStatus("NFC ready.\n1) Pick product\n2) Write tag\n3) Customer taps with their phone → POS opens")
+            !adapter.isEnabled -> setStatus("NFC is OFF.\nSettings → Connected devices → NFC → ON")
+            else -> setStatus(
+                "NFC ready.\n\n" +
+                    "• Product tags = blank NTAG stickers with a URL written on them\n" +
+                    "• Debit cards CANNOT be read as product tags (bank security)\n" +
+                    "• Optional: “Any NFC tap” uses a card only as a button to open PayPal/POS"
+            )
         }
     }
 
@@ -453,19 +541,16 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
 
     override fun onResume() {
         super.onResume()
-        updateNfcStatusBanner()
         if (writeMode || listenMode) enableReaderMode()
         refreshPreview()
     }
 
     override fun onPause() {
         super.onPause()
-        // Keep reader mode only while activity visible
         disableReaderMode()
     }
 }
 
-/** Tiny TextWatcher without boilerplate */
 private class SimpleTextWatcher(val onChange: () -> Unit) : android.text.TextWatcher {
     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
     override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}

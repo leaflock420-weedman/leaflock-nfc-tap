@@ -35,10 +35,28 @@ Keep **POS mode** selected for kit checkout with your Render PayPal integration.
 
 ---
 
+## Debit cards vs NFC stickers (important)
+
+| What you tap | What happens |
+|--------------|--------------|
+| **Blank NTAG sticker** (written with URL) | ✅ Opens POS / PayPal.me |
+| **Debit / credit contactless card** | ❌ **Cannot be read** as a product tag (EMV bank security) |
+| Debit card + **“Any NFC tap”** switch | ⚠️ Only **opens your payment link** on the staff phone — does **not** charge the card |
+
+**You cannot pull money off a customer’s debit card by “reading” it with this app.** That requires a licensed card terminal (SumUp, Square, Zeller, PayPal Zettle, etc.).
+
+What *does* work for pop-ups:
+1. Program **stickers** with `https://leaflock-paypal-pos.onrender.com/?product=family`
+2. Customer taps sticker → pays in browser/PayPal  
+3. Or staff use POS / PayPal.me amount on the phone
+
+---
+
 ## NFC troubleshooting
 
 | Problem | Fix |
 |---------|-----|
+| “Could not read tag” on a **debit card** | Expected — use **NTAG stickers**, not bank cards |
 | Nothing happens on write | Turn **NFC ON** in phone Settings |
 | Write fails | Use blank **NTAG213/215** stickers; hold still on the **back** of the phone 2s |
 | Tag locked | Some cheap tags are read-only after first write — use a new sticker |
