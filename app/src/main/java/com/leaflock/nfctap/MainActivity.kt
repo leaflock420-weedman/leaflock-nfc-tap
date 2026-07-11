@@ -89,6 +89,29 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             }
         }
 
+        // Real SoftPOS: open licensed Tap to Pay apps (phone = card terminal)
+        binding.tapToPayStripeButton.setOnClickListener {
+            openPlayOrWeb(
+                packageName = "com.stripe.android.dashboard",
+                webUrl = "https://play.google.com/store/apps/details?id=com.stripe.android.dashboard",
+                extraMsg = "Stripe Dashboard → create payment → Tap to Pay → customer taps card on your phone."
+            )
+        }
+        binding.tapToPaySquareButton.setOnClickListener {
+            openPlayOrWeb(
+                packageName = "com.squareup",
+                webUrl = "https://play.google.com/store/apps/details?id=com.squareup",
+                extraMsg = "Square Point of Sale → Charge → Tap to Pay on this device."
+            )
+        }
+        binding.tapToPayPaypalPosButton.setOnClickListener {
+            openPlayOrWeb(
+                packageName = "com.izettle.android",
+                webUrl = "https://play.google.com/store/apps/details?id=com.izettle.android",
+                extraMsg = "PayPal POS (Zettle) — Tap to Pay availability depends on country. If not in AU, use Stripe or Square."
+            )
+        }
+
         binding.openLinkButton.setOnClickListener {
             val url = buildPaymentUrl() ?: return@setOnClickListener
             openUrl(url)
@@ -336,6 +359,28 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         } catch (e: Exception) {
             toast("No browser: ${e.message}")
+        }
+    }
+
+    /** Launch SoftPOS app if installed, otherwise Play Store page. */
+    private fun openPlayOrWeb(packageName: String, webUrl: String, extraMsg: String) {
+        setStatus("💳 TAP TO PAY (real card terminal)\n\n$extraMsg")
+        val launch = packageManager.getLaunchIntentForPackage(packageName)
+        if (launch != null) {
+            startActivity(launch)
+            toast("Opened Tap to Pay app")
+        } else {
+            try {
+                startActivity(
+                    Intent(
+                        Intent.ACTION_VIEW,
+                        Uri.parse("market://details?id=$packageName")
+                    )
+                )
+            } catch (_: Exception) {
+                openUrl(webUrl)
+            }
+            toast("Install this app, then take card taps on your phone")
         }
     }
 

@@ -24,9 +24,72 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="Paradise pop-up · write tags · open POS"
+            android:text="Paradise pop-up · stickers · real Tap to Pay"
             android:textColor="@color/muted"
             android:textSize="13sp" />
+
+        <!-- REAL phone-as-terminal (SoftPOS) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@color/panel"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="💳 PHONE = TAP TO PAY TERMINAL"
+                android:textColor="@color/green"
+                android:textStyle="bold"
+                android:textSize="14sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Customer taps their debit/credit card or phone on YOUR phone.\nThis needs a licensed app (bank rules). Our app cannot charge cards by itself."
+                android:textColor="@color/text"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/tapToPayStripeButton"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="12dp"
+                android:text="Open Stripe Dashboard (Tap to Pay AU)"
+                android:textAllCaps="false"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/tapToPaySquareButton"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="8dp"
+                android:backgroundTint="@color/green_dark"
+                android:text="Open Square (Tap to Pay)"
+                android:textAllCaps="false"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/tapToPayPaypalPosButton"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:text="PayPal POS app (if available in AU)"
+                android:textAllCaps="false"
+                android:textColor="@color/text" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="Australia: Stripe Tap to Pay + eftpos works on compatible Android. Sign up → install app → take payment → customer taps card on back of phone."
+                android:textColor="@color/amber"
+                android:textSize="12sp" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/statusText"
