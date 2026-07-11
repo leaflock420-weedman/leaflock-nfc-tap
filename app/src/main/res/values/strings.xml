@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">LeafLock NFC Tap</string>
+    <string name="app_name">LeafLock Tap to Pay</string>
     <string name="pos_base_url">https://leaflock-paypal-pos.onrender.com</string>
     <!-- Optional fallback PayPal.me username if you use that mode -->
     <string name="paypal_me_user">LeafLockAU</string>

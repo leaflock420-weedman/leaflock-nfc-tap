@@ -9,10 +9,18 @@ android {
 
     defaultConfig {
         applicationId = "com.leaflock.nfctap"
-        minSdk = 26
+        // Tap to Pay on Android requires Android 13+
+        minSdk = 33
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "2.0.0-taptopay"
+        buildConfigField(
+            "String",
+            "POS_API_BASE",
+            "\"https://leaflock-paypal-pos.onrender.com\""
+        )
+        // true = Stripe simulated reader (no real card charge) for testing
+        buildConfigField("boolean", "STRIPE_SIMULATED", "true")
     }
 
     buildTypes {
@@ -22,6 +30,8 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Set simulated false for production builds after Stripe is live
+            buildConfigField("boolean", "STRIPE_SIMULATED", "false")
         }
     }
     compileOptions {
@@ -33,6 +43,7 @@ android {
     }
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 }
 
@@ -42,4 +53,12 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.constraintlayout:constraintlayout:2.2.0")
     implementation("androidx.activity:activity-ktx:1.9.3")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+
+    // Stripe Terminal — phone SoftPOS / Tap to Pay
+    implementation("com.stripe:stripeterminal-taptopay:4.7.3")
+    implementation("com.stripe:stripeterminal-core:4.7.3")
+
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 }
